@@ -4,55 +4,92 @@
 import cv2
 import numpy as np
 
-def make_mask(laugh):
-    mask = np.zeros(laugh.shape)
-    for i, line in enumerate(laugh):
+
+# Segment Laughing Man (to make gif transparent)
+def segment_lm(lm):
+    lm_region = np.zeros(lm.shape)
+    for v, line in enumerate(lm):
         non_white_pxs = np.array(np.where(line < 250))
         if non_white_pxs.size > 0:
             min_h, max_h = np.min(non_white_pxs, axis=1)[0], np.max(non_white_pxs, axis=1)[0]
-            mask[i, min_h:max_h, :] = 1
+            lm_region[v, min_h:max_h, :] = 1
 
-    return mask
+    segmented_lm = lm_region * lm
 
-cascade = cv2.CascadeClassifier('haarcascade_frontalface_alt2.xml')
+    return segmented_lm, lm_region
 
-cap = cv2.VideoCapture(0)
-ret, frame = cap.read()
 
-gif_cap = cv2.VideoCapture("laughing_man.gif")
-_, laugh = gif_cap.read()
-mask = make_mask(laugh)
+# Synthesize Laughing Man frame
+def synth_lm(frame, segmented_lm, lm_region, rect):
 
-while ret:
+    # Sizing up face region so that Laughing Man covers the whole face.
+    rect[0] = max(rect[0] - 30, 0)
+    rect[1] = max(rect[1] - 30, 0)
+    rect[2] = min(rect[2] + 60, frame.shape[1] - rect[0])
+    rect[3] = min(rect[3] + 60, frame.shape[0] - rect[1])
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # 画像認識を高速に行うためにグレースケール化。
-    gray = cv2.resize(gray, (int(frame.shape[1]/4), int(frame.shape[0]/4)))
+    segmented_lm = cv2.resize(segmented_lm, tuple(rect[2:]))
+    lm_region = cv2.resize(lm_region, tuple(rect[2:]))
 
-    faces = cascade.detectMultiScale(gray)  # 顔を探す。
+    masked_frame = frame[rect[1]:rect[1]+rect[3], rect[0]:rect[0]+rect[2], :] * (1.0 - lm_region)
 
-    if len(faces) > 0:
-        for rect in faces:
-            rect *= 4
+    frame[rect[1]:rect[1]+rect[3], rect[0]:rect[0]+rect[2], :] = segmented_lm + masked_frame
 
-            laugh = cv2.resize(laugh, tuple(rect[2:]))
-            mask = cv2.resize(mask, tuple(rect[2:]))
+    return frame
 
-            # 笑い男の合成。
-            frame[rect[1]:rect[1]+rect[3], rect[0]:rect[0]+rect[2], :] = laugh[:,:, :] * mask + frame[rect[1]:rect[1]+rect[3], rect[0]:rect[0]+rect[2], :] * (1.0 - mask)
 
-    cv2.imshow('laughing man', frame)
-
-    ret, frame = cap.read()
+def stream_lm_gif(gif_cap):
 
     gif_cap.grab()
     gif_cap.grab()
-    gif_ret, laugh = gif_cap.read()
+    gif_ret, lm = gif_cap.read()
     if not gif_ret:
         gif_cap = cv2.VideoCapture("laughing_man.gif")
-        gif_ret, laugh = gif_cap.read()
+        gif_ret, lm = gif_cap.read()
 
-    if cv2.waitKey(10) == 27:
-        break
+    return lm, gif_cap
 
-cap.release()
-cv2.destroyAllWindows()
+
+def main():
+
+    cascade = cv2.CascadeClassifier('haarcascade_frontalface_alt2.xml')
+
+    # VideoCapture with camera
+    cap = cv2.VideoCapture(0)
+    ret, frame = cap.read()
+
+    # VideoCapture from gif file
+    gif_cap = cv2.VideoCapture("laughing_man.gif")
+    _, lm = gif_cap.read()
+    segmented_lm, mask = segment_lm(lm)
+
+    # Main loop
+    while ret:
+
+        # Face detection with small-sizing acceleration.
+        small_frame = cv2.resize(frame, (int(frame.shape[1]/4), int(frame.shape[0]/4)))
+        faces = np.array(cascade.detectMultiScale(small_frame)) * 4
+
+        # Synthesize Laughing Man
+        if faces.shape[0] > 0:
+
+            for rect in faces:
+                frame = synth_lm(frame, segmented_lm, mask, rect)
+
+        cv2.imshow('laughing man', frame)
+
+        ret, frame = cap.read()
+
+        lm, gif_cap = stream_lm_gif(gif_cap)
+        segmented_lm = lm * mask
+
+        if cv2.waitKey(10) == 27:
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
+
